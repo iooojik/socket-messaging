@@ -15,7 +15,8 @@ const (
 )
 
 var (
-	selectRegexp = regexp.MustCompile(`select ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})`)
+	selectRegexp = regexp.MustCompile(`calc ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})`)
+	//selectRegexp = regexp.MustCompile(`select ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})\s+(\d+)`)
 )
 
 func NewSocketServer(host, port, netType string, maxConnectionPool int) *Server {
@@ -53,8 +54,9 @@ func (s *Server) Run() {
 				}
 				connectedClient := &client{
 					connection:        conn,
-					Id:                conn.RemoteAddr().String(),
-					incomeConnections: make(chan string),
+					id:                conn.RemoteAddr().String(),
+					incomeConnections: make(chan *incomeConnectionData),
+					number:            1,
 				}
 				s.pool[connectedClient] = true
 				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), totalConnected+1))
@@ -84,8 +86,8 @@ func (s *Server) sendMessage(message string, conn net.Conn) {
 func (s *Server) getConnectionsList(author string) []string {
 	var clientsAddrs []string
 	for c, b := range s.pool {
-		if b && c.Id != author {
-			clientsAddrs = append(clientsAddrs, c.Id)
+		if b && c.id != author {
+			clientsAddrs = append(clientsAddrs, c.id)
 		}
 	}
 	return clientsAddrs
@@ -114,15 +116,15 @@ func (s *Server) processConnection(cl *client) {
 func (s *Server) processingIncomeConnections(cl *client) {
 	defer log.Println("closing connection...")
 	for incomeConnection := range cl.incomeConnections {
-		if income := s.getConnectionById(incomeConnection); income != nil {
-			s.sendMessage(fmt.Sprintf("hello from %s", cl.connection.RemoteAddr()), income.connection)
-		}
+		cl.number += incomeConnection.number
+		s.sendMessage(fmt.Sprintf("%d\n", cl.number), incomeConnection.connection.connection)
+		s.sendMessage(fmt.Sprintf("%d\n", cl.number), cl.connection)
 	}
 }
 
 func (s *Server) getConnectionById(id string) *client {
 	for cl, connected := range s.pool {
-		if connected && cl.Id == id {
+		if connected && cl.id == id {
 			return cl
 		}
 	}
@@ -137,10 +139,10 @@ func (s *Server) receiver(cl *client) {
 			break
 		}
 		message = strings.Trim(message, defaultCutSet)
-		fmt.Print(fmt.Sprintf("Message Received from %s: %s\n", cl.Id, message))
+		fmt.Print(fmt.Sprintf("message received from %s: %s\n", cl.id, message))
 		switch {
 		case message == "/list":
-			connectionsMsg := s.getConnectionsList(cl.Id)
+			connectionsMsg := s.getConnectionsList(cl.id)
 			if len(connectionsMsg) > 0 {
 				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), cl.connection)
 			} else {
@@ -148,9 +150,21 @@ func (s *Server) receiver(cl *client) {
 			}
 			break
 		case selectRegexp.MatchString(message):
-			remoteId := selectRegexp.FindAllStringSubmatch(message, -1)[0][1]
-			if remoteId != cl.Id && s.checkIdExists(remoteId) {
-				cl.incomeConnections <- remoteId
+			res := selectRegexp.FindAllStringSubmatch(message, -1)
+			remoteId := res[0][1]
+			number := cl.number
+			//number, e := strconv.Atoi(res[0][len(res[0])-1])
+			//if e != nil {
+			//	s.sendMessage("wrong data", cl.connection)
+			//	continue
+			//}
+			if remoteId != cl.id {
+				if conn := s.getConnectionById(remoteId); conn != nil {
+					cl.incomeConnections <- &incomeConnectionData{
+						connection: conn,
+						number:     number,
+					}
+				}
 			} else {
 				s.sendMessage("wrong remote id", cl.connection)
 			}
@@ -161,7 +175,7 @@ func (s *Server) receiver(cl *client) {
 
 func (s *Server) checkIdExists(check string) bool {
 	for c, connected := range s.pool {
-		if connected && c.Id == check {
+		if connected && c.id == check {
 			return true
 		}
 	}
