@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 )
 
-func NewSocketServer(host, port, netType string) *Server {
+const (
+	defaultCutSet = "\n\t\r "
+)
+
+func NewSocketServer(host, port, netType string, maxConnectionPool int) *Server {
 	return &Server{
-		host:    host,
-		port:    port,
-		netType: netType,
-		pool:    make(map[*client]bool),
+		host:              host,
+		port:              port,
+		netType:           netType,
+		pool:              make(map[*client]bool),
+		maxConnectionPool: maxConnectionPool,
 	}
 }
 
@@ -30,9 +36,21 @@ func (s *Server) Run() {
 			if conn, connectionErr := connection.Accept(); connectionErr != nil {
 				panic(connectionErr)
 			} else {
-				connectedClient := &client{connection: conn}
+				totalConnected := s.countConnections()
+				if totalConnected >= s.maxConnectionPool {
+					s.sendMessage("too many connections. try again later", conn)
+					err := conn.Close()
+					if err != nil {
+						panic(err)
+					}
+					continue
+				}
+				connectedClient := &client{
+					connection: conn,
+					Id:         conn.RemoteAddr().String(),
+				}
 				s.pool[connectedClient] = true
-				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), s.countConnections()))
+				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), totalConnected+1))
 				go s.processConnection(connectedClient)
 			}
 		}
@@ -49,6 +67,23 @@ func (s *Server) countConnections() int {
 	return total
 }
 
+func (s *Server) sendMessage(message string, conn net.Conn) {
+	_, err := conn.Write([]byte(message))
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (s *Server) getConnectionsList(author string) []string {
+	var clientsAddrs []string
+	for c, b := range s.pool {
+		if b && c.Id != author {
+			clientsAddrs = append(clientsAddrs, c.Id)
+		}
+	}
+	return clientsAddrs
+}
+
 func (s *Server) processConnection(client *client) {
 	defer func() {
 		log.Println(fmt.Sprintf("client %s disconnected", client.connection.RemoteAddr()))
@@ -63,7 +98,19 @@ func (s *Server) processConnection(client *client) {
 		if err != nil {
 			break
 		}
-		fmt.Print("Message Received:", message)
+		message = strings.Trim(message, defaultCutSet)
+		fmt.Print(fmt.Sprintf("Message Received from %s: %s", client.Id, message))
+		switch message {
+		case "/list":
+			connectionsMsg := s.getConnectionsList(client.Id)
+			if len(connectionsMsg) > 0 {
+				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), client.connection)
+			} else {
+				s.sendMessage("no remote connections\n", client.connection)
+			}
+			break
+		}
+
 	}
 }
 
