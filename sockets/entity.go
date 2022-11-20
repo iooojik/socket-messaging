@@ -11,6 +11,9 @@ type Server struct {
 }
 
 type client struct {
-	Id         string
-	connection net.Conn
+	Id                string
+	connection        net.Conn
+	incomeConnections chan string
+	// канал, который хранит id компьютеров, пытающихся подключиться к нему
+	// и в порядке очереди отвечает каждому
 }

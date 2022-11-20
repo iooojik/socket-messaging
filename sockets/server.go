@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strings"
+	"sync"
 )
 
 const (
 	defaultCutSet = "\n\t\r "
+)
+
+var (
+	selectRegexp = regexp.MustCompile(`select ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})`)
 )
 
 func NewSocketServer(host, port, netType string, maxConnectionPool int) *Server {
@@ -46,8 +52,9 @@ func (s *Server) Run() {
 					continue
 				}
 				connectedClient := &client{
-					connection: conn,
-					Id:         conn.RemoteAddr().String(),
+					connection:        conn,
+					Id:                conn.RemoteAddr().String(),
+					incomeConnections: make(chan string),
 				}
 				s.pool[connectedClient] = true
 				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), totalConnected+1))
@@ -84,34 +91,81 @@ func (s *Server) getConnectionsList(author string) []string {
 	return clientsAddrs
 }
 
-func (s *Server) processConnection(client *client) {
+func (s *Server) processConnection(cl *client) {
 	defer func() {
-		log.Println(fmt.Sprintf("client %s disconnected", client.connection.RemoteAddr()))
-		err := client.connection.Close()
+		log.Println(fmt.Sprintf("cl %s disconnected", cl.connection.RemoteAddr()))
+		err := cl.connection.Close()
 		if err != nil {
 			panic(err)
 		}
-		s.pool[client] = false
+		s.pool[cl] = false
 	}()
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.receiver(cl)
+	}()
+	go s.processingIncomeConnections(cl)
+	wg.Wait()
+	close(cl.incomeConnections)
+}
+
+func (s *Server) processingIncomeConnections(cl *client) {
+	defer log.Println("closing connection...")
+	for incomeConnection := range cl.incomeConnections {
+		if income := s.getConnectionById(incomeConnection); income != nil {
+			s.sendMessage(fmt.Sprintf("hello from %s", cl.connection.RemoteAddr()), income.connection)
+		}
+	}
+}
+
+func (s *Server) getConnectionById(id string) *client {
+	for cl, connected := range s.pool {
+		if connected && cl.Id == id {
+			return cl
+		}
+	}
+	return nil
+}
+
+func (s *Server) receiver(cl *client) {
+	//получение сообщений
 	for {
-		message, err := bufio.NewReader(client.connection).ReadString('\n')
+		message, err := bufio.NewReader(cl.connection).ReadString('\n')
 		if err != nil {
 			break
 		}
 		message = strings.Trim(message, defaultCutSet)
-		fmt.Print(fmt.Sprintf("Message Received from %s: %s", client.Id, message))
-		switch message {
-		case "/list":
-			connectionsMsg := s.getConnectionsList(client.Id)
+		fmt.Print(fmt.Sprintf("Message Received from %s: %s\n", cl.Id, message))
+		switch {
+		case message == "/list":
+			connectionsMsg := s.getConnectionsList(cl.Id)
 			if len(connectionsMsg) > 0 {
-				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), client.connection)
+				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), cl.connection)
 			} else {
-				s.sendMessage("no remote connections\n", client.connection)
+				s.sendMessage("no remote connections\n", cl.connection)
+			}
+			break
+		case selectRegexp.MatchString(message):
+			remoteId := selectRegexp.FindAllStringSubmatch(message, -1)[0][1]
+			if remoteId != cl.Id && s.checkIdExists(remoteId) {
+				cl.incomeConnections <- remoteId
+			} else {
+				s.sendMessage("wrong remote id", cl.connection)
 			}
 			break
 		}
-
 	}
+}
+
+func (s *Server) checkIdExists(check string) bool {
+	for c, connected := range s.pool {
+		if connected && c.Id == check {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) makeMessage(buffer []byte) string {
