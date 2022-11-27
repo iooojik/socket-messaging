@@ -15,7 +15,7 @@ const (
 )
 
 var (
-	selectRegexp = regexp.MustCompile(`calc ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})`)
+	selectRegexp = regexp.MustCompile(`connect ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})`)
 	//selectRegexp = regexp.MustCompile(`select ((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}:\d{1,5})\s+(\d+)`)
 )
 
@@ -30,6 +30,7 @@ func NewSocketServer(host, port, netType string, maxConnectionPool int) *Server 
 }
 
 func (s *Server) Run() {
+	// запускаем сокет-сервер
 	if connection, serverErr := net.Listen(s.netType, fmt.Sprintf("%s:%s", s.host, s.port)); serverErr != nil {
 		panic(serverErr)
 	} else {
@@ -39,10 +40,12 @@ func (s *Server) Run() {
 				panic(err)
 			}
 		}(connection)
+		// получаем все подключения и обрабатываем их
 		for {
 			if conn, connectionErr := connection.Accept(); connectionErr != nil {
 				panic(connectionErr)
 			} else {
+				// проверяем, не заполнен ли пул подключений
 				totalConnected := s.countConnections()
 				if totalConnected >= s.maxConnectionPool {
 					s.sendMessage("too many connections. try again later", conn)
@@ -52,14 +55,16 @@ func (s *Server) Run() {
 					}
 					continue
 				}
+				// создаем нового клиента
 				connectedClient := &client{
 					connection:        conn,
 					id:                conn.RemoteAddr().String(),
-					incomeConnections: make(chan *incomeConnectionData),
-					number:            1,
+					incomeConnections: make(chan *processingConnection),
 				}
+				// указываем, что он подключен
 				s.pool[connectedClient] = true
 				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), totalConnected+1))
+				// обрабатываем сообщения от клиента
 				go s.processConnection(connectedClient)
 			}
 		}
@@ -95,7 +100,7 @@ func (s *Server) getConnectionsList(author string) []string {
 
 func (s *Server) processConnection(cl *client) {
 	defer func() {
-		log.Println(fmt.Sprintf("cl %s disconnected", cl.connection.RemoteAddr()))
+		log.Println(fmt.Sprintf("client %s disconnected", cl.connection.RemoteAddr()))
 		err := cl.connection.Close()
 		if err != nil {
 			panic(err)
@@ -108,17 +113,41 @@ func (s *Server) processConnection(cl *client) {
 		defer wg.Done()
 		s.receiver(cl)
 	}()
+	// запускаем обработку входящих подключений на клиента
 	go s.processingIncomeConnections(cl)
 	wg.Wait()
 	close(cl.incomeConnections)
 }
 
-func (s *Server) processingIncomeConnections(cl *client) {
-	defer log.Println("closing connection...")
-	for incomeConnection := range cl.incomeConnections {
-		cl.number += incomeConnection.number
-		s.sendMessage(fmt.Sprintf("%d\n", cl.number), incomeConnection.connection.connection)
-		s.sendMessage(fmt.Sprintf("%d\n", cl.number), cl.connection)
+func (s *Server) processingIncomeConnections(initiator *client) {
+	defer log.Println(fmt.Sprintf("closing connections %s", initiator.connection.RemoteAddr()))
+	for destProcCon := range initiator.incomeConnections {
+		initiator.processingConnection = destProcCon
+		destProcCon.aimClient.processingConnection = &processingConnection{
+			aimClient: destProcCon.aimClient,
+			parent:    initiator,
+			messages:  destProcCon.messages,
+		}
+		for msg := range *destProcCon.messages {
+			if msg.message == "close" {
+				close(*destProcCon.messages)
+				log.Println(fmt.Sprintf("client %s disconnected from host %s", destProcCon.aimClient.connection.RemoteAddr(), initiator.connection.RemoteAddr()))
+				s.sendMessage(fmt.Sprintf("client %s disconnected\n", destProcCon.aimClient.connection.RemoteAddr()), destProcCon.aimClient.connection)
+				s.sendMessage(fmt.Sprintf("disconnected from host %s\n", initiator.connection.RemoteAddr()), initiator.connection)
+				break
+			}
+			if msg.author == initiator {
+				s.sendMessage(msg.message+"\n", destProcCon.aimClient.connection)
+			} else {
+				s.sendMessage(msg.message+"\n", initiator.connection)
+			}
+		}
+		// делаем что-то, когда кто-то подключается
+		// todo общение между двумя клиентами до тех пор, пока не оборвется подключение одним из них
+		//s.sendMessage(fmt.Sprintf("%d\n", initiator.number), processingConnection.aimClient.aimClient)
+		//s.sendMessage(fmt.Sprintf("%d\n", initiator.number), initiator.aimClient)
+		initiator.processingConnection = nil
+		destProcCon.aimClient.processingConnection = nil
 	}
 }
 
@@ -131,44 +160,60 @@ func (s *Server) getConnectionById(id string) *client {
 	return nil
 }
 
-func (s *Server) receiver(cl *client) {
-	//получение сообщений
+func (s *Server) receiver(initiator *client) {
+	// получение сообщений сервером
 	for {
-		message, err := bufio.NewReader(cl.connection).ReadString('\n')
+		receivedMsg, err := bufio.NewReader(initiator.connection).ReadString('\n')
 		if err != nil {
-			break
+			panic(err)
 		}
-		message = strings.Trim(message, defaultCutSet)
-		fmt.Print(fmt.Sprintf("message received from %s: %s\n", cl.id, message))
+		receivedMsg = strings.Trim(receivedMsg, defaultCutSet)
+		log.Println(fmt.Sprintf("message received from %s: %s\n", initiator.id, receivedMsg))
+		// обработка команд
 		switch {
-		case message == "/list":
-			connectionsMsg := s.getConnectionsList(cl.id)
+		// получение списка возможных подключений
+		case receivedMsg == "/list":
+			connectionsMsg := s.getConnectionsList(initiator.id)
 			if len(connectionsMsg) > 0 {
-				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), cl.connection)
+				s.sendMessage(fmt.Sprintf("%s\n", strings.Join(connectionsMsg, "\n")), initiator.connection)
 			} else {
-				s.sendMessage("no remote connections\n", cl.connection)
+				s.sendMessage("no remote connections\n", initiator.connection)
 			}
 			break
-		case selectRegexp.MatchString(message):
-			res := selectRegexp.FindAllStringSubmatch(message, -1)
+		//	если сообщение подходит под регулярку selectRegexp,
+		//	то пробуем добавляем в очередь клиентов на подключение к клиенту
+		case selectRegexp.MatchString(receivedMsg):
+			// initiator - кто подключается
+			// conn - к кому подключаемся
+			res := selectRegexp.FindAllStringSubmatch(receivedMsg, -1)
 			remoteId := res[0][1]
-			number := cl.number
-			//number, e := strconv.Atoi(res[0][len(res[0])-1])
-			//if e != nil {
-			//	s.sendMessage("wrong data", cl.connection)
-			//	continue
-			//}
-			if remoteId != cl.id {
-				if conn := s.getConnectionById(remoteId); conn != nil {
-					cl.incomeConnections <- &incomeConnectionData{
-						connection: conn,
-						number:     number,
+			if remoteId != initiator.id {
+				if destCon := s.getConnectionById(remoteId); destCon != nil {
+					if destCon.processingConnection != nil {
+						s.sendMessage("remote host processing another connection\n", initiator.connection)
+					} else {
+						messagesChan := make(chan message)
+						initiator.incomeConnections <- &processingConnection{
+							parent:    initiator,
+							aimClient: destCon,
+							messages:  &messagesChan,
+						}
+						s.sendMessage(fmt.Sprintf("received a new connection from %s to aimClient pool\n", initiator.connection.RemoteAddr()), destCon.connection)
+						s.sendMessage("successfully connected\n", initiator.connection)
 					}
 				}
 			} else {
-				s.sendMessage("wrong remote id", cl.connection)
+				s.sendMessage(fmt.Sprintf("wrong remote id %s", remoteId), initiator.connection)
 			}
 			break
+		default:
+			if initiator.processingConnection != nil {
+				*initiator.processingConnection.messages <- message{
+					author:  initiator,
+					message: receivedMsg,
+				}
+				break
+			}
 		}
 	}
 }
@@ -183,9 +228,5 @@ func (s *Server) checkIdExists(check string) bool {
 }
 
 func (s *Server) makeMessage(buffer []byte) string {
-	return string(buffer)
-}
-
-func (c *client) getDataBytes(buffer []byte) (int, error) {
-	return c.connection.Read(buffer)
+	return string(buffer) + "\n"
 }
