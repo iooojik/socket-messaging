@@ -136,16 +136,15 @@ func (s *Server) processingIncomeConnections(initiator *client) {
 				s.sendMessage(fmt.Sprintf("disconnected from host %s\n", initiator.connection.RemoteAddr()), initiator.connection)
 				break
 			}
-			if msg.author == initiator {
+			// делаем что-то, когда кто-то подключается
+			if msg.author == initiator && initiator.permToSend {
 				s.sendMessage(msg.message+"\n", destProcCon.aimClient.connection)
-			} else {
+			} else if msg.author.permToSend {
 				s.sendMessage(msg.message+"\n", initiator.connection)
 			}
+			initiator.permToSend = !initiator.permToSend
+			destProcCon.aimClient.permToSend = !destProcCon.aimClient.permToSend
 		}
-		// делаем что-то, когда кто-то подключается
-		// todo общение между двумя клиентами до тех пор, пока не оборвется подключение одним из них
-		//s.sendMessage(fmt.Sprintf("%d\n", initiator.number), processingConnection.aimClient.aimClient)
-		//s.sendMessage(fmt.Sprintf("%d\n", initiator.number), initiator.aimClient)
 		initiator.processingConnection = nil
 		destProcCon.aimClient.processingConnection = nil
 	}
@@ -198,6 +197,8 @@ func (s *Server) receiver(initiator *client) {
 							aimClient: destCon,
 							messages:  &messagesChan,
 						}
+						initiator.permToSend = false
+						destCon.permToSend = true
 						s.sendMessage(fmt.Sprintf("received a new connection from %s to aimClient pool\n", initiator.connection.RemoteAddr()), destCon.connection)
 						s.sendMessage("successfully connected\n", initiator.connection)
 					}
@@ -207,7 +208,7 @@ func (s *Server) receiver(initiator *client) {
 			}
 			break
 		default:
-			if initiator.processingConnection != nil {
+			if initiator.processingConnection != nil && initiator.permToSend {
 				*initiator.processingConnection.messages <- message{
 					author:  initiator,
 					message: receivedMsg,

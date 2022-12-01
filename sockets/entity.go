@@ -17,6 +17,7 @@ type client struct {
 	// и в порядке очереди отвечает каждому
 	incomeConnections    chan *processingConnection
 	processingConnection *processingConnection
+	permToSend           bool
 }
 
 type message struct {
