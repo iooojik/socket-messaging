@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -63,6 +64,7 @@ func (s *Server) Run() {
 				}
 				// указываем, что он подключен
 				s.pool[connectedClient] = true
+				s.sendMessage("connected\n", conn)
 				log.Println(fmt.Sprintf("received new connection %s total connecitons: %d", conn.RemoteAddr(), totalConnected+1))
 				// обрабатываем сообщения от клиента
 				go s.processConnection(connectedClient)
@@ -122,6 +124,18 @@ func (s *Server) processConnection(cl *client) {
 func (s *Server) processingIncomeConnections(initiator *client) {
 	defer log.Println(fmt.Sprintf("closing connections %s", initiator.connection.RemoteAddr()))
 	for destProcCon := range initiator.incomeConnections {
+		for {
+			if destProcCon.aimClient.processingConnection == nil {
+				s.sendMessage("processing new connection\n", destProcCon.aimClient.connection)
+				s.sendMessage("now you have permission to send 1 message\n", destProcCon.aimClient.connection)
+				s.sendMessage("processing new connection\n", initiator.connection)
+				break
+			} else {
+				s.sendMessage("waiting...\n", initiator.connection)
+				time.Sleep(3 * time.Second)
+			}
+		}
+
 		initiator.processingConnection = destProcCon
 		destProcCon.aimClient.processingConnection = &processingConnection{
 			aimClient: destProcCon.aimClient,
@@ -189,19 +203,19 @@ func (s *Server) receiver(initiator *client) {
 			if remoteId != initiator.id {
 				if destCon := s.getConnectionById(remoteId); destCon != nil {
 					if destCon.processingConnection != nil {
-						s.sendMessage("remote host processing another connection\n", initiator.connection)
+						s.sendMessage("remote host processing another connection. please wait\n", initiator.connection)
 					} else {
-						messagesChan := make(chan message)
-						initiator.incomeConnections <- &processingConnection{
-							parent:    initiator,
-							aimClient: destCon,
-							messages:  &messagesChan,
-						}
-						initiator.permToSend = false
 						destCon.permToSend = true
-						s.sendMessage(fmt.Sprintf("received a new connection from %s to aimClient pool\n", initiator.connection.RemoteAddr()), destCon.connection)
+						s.sendMessage(fmt.Sprintf("received a new connection from %s to clients pool\n", initiator.connection.RemoteAddr()), destCon.connection)
 						s.sendMessage("successfully connected\n", initiator.connection)
 					}
+					messagesChan := make(chan message)
+					initiator.incomeConnections <- &processingConnection{
+						parent:    initiator,
+						aimClient: destCon,
+						messages:  &messagesChan,
+					}
+					initiator.permToSend = false
 				}
 			} else {
 				s.sendMessage(fmt.Sprintf("wrong remote id %s", remoteId), initiator.connection)
