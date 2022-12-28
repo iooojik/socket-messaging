@@ -32,7 +32,9 @@ func NewSocketServer(host, port, netType string, maxConnectionPool int) *Server 
 
 func (s *Server) Run() {
 	// запускаем сокет-сервер
-	if connection, serverErr := net.Listen(s.netType, fmt.Sprintf("%s:%s", s.host, s.port)); serverErr != nil {
+	host := fmt.Sprintf("%s:%s", s.host, s.port)
+	log.Println(fmt.Sprintf("server running: %s", host))
+	if connection, serverErr := net.Listen(s.netType, host); serverErr != nil {
 		panic(serverErr)
 	} else {
 		defer func(connection net.Listener) {
@@ -178,7 +180,7 @@ func (s *Server) receiver(initiator *client) {
 	for {
 		receivedMsg, err := bufio.NewReader(initiator.connection).ReadString('\n')
 		if err != nil {
-			panic(err)
+			log.Println(fmt.Sprintf("bad message: %s", err.Error()))
 		}
 		receivedMsg = strings.Trim(receivedMsg, defaultCutSet)
 		log.Println(fmt.Sprintf("message received from %s: %s\n", initiator.id, receivedMsg))
