@@ -107,7 +107,7 @@ func (s *Server) processConnection(cl *client) {
 		log.Println(fmt.Sprintf("client %s disconnected", cl.connection.RemoteAddr()))
 		err := cl.connection.Close()
 		if err != nil {
-			panic(err)
+			log.Println(err)
 		}
 		s.pool[cl] = false
 	}()
@@ -180,7 +180,8 @@ func (s *Server) receiver(initiator *client) {
 	for {
 		receivedMsg, err := bufio.NewReader(initiator.connection).ReadString('\n')
 		if err != nil {
-			continue
+			s.pool[initiator] = false
+			return
 		}
 		receivedMsg = strings.Trim(receivedMsg, defaultCutSet)
 		log.Println(fmt.Sprintf("message received from %s: %s\n", initiator.id, receivedMsg))
