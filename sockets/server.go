@@ -180,7 +180,7 @@ func (s *Server) receiver(initiator *client) {
 	for {
 		receivedMsg, err := bufio.NewReader(initiator.connection).ReadString('\n')
 		if err != nil {
-			log.Println(fmt.Sprintf("bad message: %s", err.Error()))
+			continue
 		}
 		receivedMsg = strings.Trim(receivedMsg, defaultCutSet)
 		log.Println(fmt.Sprintf("message received from %s: %s\n", initiator.id, receivedMsg))
